@@ -2,11 +2,11 @@
 # Author: Armit
 # Create Time: 2022/09/27 
 
-from random import randrange
-
 import torch
+import torch.nn.functional as F
 from torchvision.utils import make_grid
 import matplotlib.pyplot as plt
+import numpy as np
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if device == 'cuda':
@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 
 def analyze_NX(nx: dict):
-  device = nx['x'].device
+  device = nx['dx'].device
 
   n_classes = nx['nx_pred'].shape[-1]
   Y_tgt = torch.LongTensor([i for i in range(n_classes)]).to(device)
@@ -40,6 +40,51 @@ def analyze_NX(nx: dict):
   print(f'grad: max={grad.max()} min={grad.min()}')
 
 
+def ncp_expand_batch(ncp:torch.Tensor, shape:torch.Size, resizer='tile') -> torch.Tensor:
+  ''' [C, h, w] -> [B, C, H, W] '''
+
+  B, C, H, W = shape
+
+  if resizer == 'tile':
+    ncp = ncp_tile(ncp, torch.Size([C, H, W]))
+  elif resizer == 'interpolate':
+    ncp = ncp_interpolate(ncp, torch.Size([C, H, W]))
+  else:
+    raise ValueError('choose from ["tile", "interpolate"]')
+  
+  ncp = ncp.unsqueeze(dim=0).repeat([B, 1, 1, 1])   # expand batch
+
+  return ncp
+
+def ncp_tile(ncp:torch.Tensor, shape:torch.Size) -> torch.Tensor:
+  ''' [C, h, w] -> [C, H, W] '''
+
+  c, h, w = ncp.shape
+  C, H, W = shape
+  assert c == C
+
+  rf = int(np.ceil(H / h))
+  cf = int(np.ceil(W / w))
+
+  ncp = ncp.tile([1, rf, cf])   # tile
+  ncp = ncp[:, :H, :W]          # clip edge
+
+  return ncp
+
+def ncp_interpolate(ncp:torch.Tensor, shape:torch.Size, mode='bilinear') -> torch.Tensor:
+  ''' [C, h, w] -> [C, H, W] '''
+
+  c, h, w = ncp.shape
+  C, H, W = shape
+  assert c == C
+
+  ncp = ncp.unsqueeze(dim=0)
+  ncp = F.interpolate(ncp, (H, W), mode=mode)
+  ncp = ncp.squeeze(dim=0)
+
+  return ncp
+
+
 def plt_images(AX):
   AX = make_grid(AX, nrow=10)
   AX = AX.cpu().numpy()
@@ -52,7 +97,7 @@ def save_images(AX, fp):
   AX = AX.cpu().numpy()
   plt.imshow(AX.transpose([1, 2, 0]))
   plt.savefig(fp, dpi=400)
-  
+
 
 # 'resnet18_imagenet-min-svhn_pgd_e3e-2_a1e-3'
 def exp_name(model='resnet18', train_dataset='imagenet', mode='min', atk_dataset='svhn', method='pgd', eps=0.03, alpha=0.001) -> str:

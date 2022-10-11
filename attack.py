@@ -75,7 +75,7 @@ def attack(args):
     print(f'[{i+1}/{n_samples}] pred: {x_pred}, prob: {prob[x_pred]:%}')
 
     X_repeat = X.repeat([args.batch_size, 1, 1, 1])      # [B, C=3, H, W]
-    nxs, dxs, losses, grads, preds = [], [], [], [], []
+    dxs, losses, grads, preds = [], [], [], []
     for b in range(N_CLASSES // args.batch_size):
       cls_s = b * args.batch_size
       cls_e = (b + 1) * args.batch_size
@@ -83,9 +83,8 @@ def attack(args):
       Y_tgt = torch.LongTensor([i for i in range(cls_s, cls_e)])
       Y_tgt = Y_tgt.to(device)
 
-      nx, dx, loss, grad, pred = atk(X_repeat, Y_tgt)
+      dx, loss, grad, pred = atk(X_repeat, Y_tgt)
 
-      nxs   .append(nx  .detach().cpu())
       dxs   .append(dx  .detach().cpu())
       losses.append(loss.detach().cpu())
       grads .append(grad.detach().cpu())
@@ -94,9 +93,8 @@ def attack(args):
     NX = {
       'x':       x,
       'x_pred':  x_pred,
-      'nx':      torch.cat(nx,     axis=0),
-      'nx_pred': torch.cat(preds,  axis=0),
       'dx':      torch.cat(dxs,    axis=0),
+      'nx_pred': torch.cat(preds,  axis=0),
       'loss':    torch.cat(losses, axis=0),
       'grad':    torch.cat(grads,  axis=0),
     }

@@ -76,7 +76,7 @@ def attack(args):
   logger.info(f'>> pred: {x_pred}, prob: {prob[x_pred]:%}')
 
   X_repeat = X.repeat([args.batch_size, 1, 1, 1])      # [B, C=3, H, W]
-  nxs, dxs, losses, grads, preds = [], [], [], [], []
+  dxs, losses, grads, preds = [], [], [], []
   for b in range(N_CLASSES // args.batch_size):
     cls_s = b * args.batch_size
     cls_e = (b + 1) * args.batch_size
@@ -84,25 +84,23 @@ def attack(args):
     Y_tgt = torch.LongTensor([i for i in range(cls_s, cls_e)])
     Y_tgt = Y_tgt.to(device)
 
-    nx, dx, loss, grad, pred = atk(X_repeat, Y_tgt)
+    dx, loss, grad, pred = atk(X_repeat, Y_tgt)
 
-    nxs   .append(nx  .detach().cpu())
     dxs   .append(dx  .detach().cpu())
     losses.append(loss.detach().cpu())
     grads .append(grad.detach().cpu())
     preds .append(pred.detach().cpu())
 
     fp = os.path.join(args.img_path, f'{args.exp_name};cls={cls_s}~{cls_e - 1}.png')
-    save_images(nx, fp)
+    save_images(dx, fp)
 
   NX = {
-    'x':       x,
-    'x_pred':  x_pred,
-    'nx':      torch.cat(nxs,    axis=0),
-    'nx_pred': torch.cat(preds,  axis=0),
-    'dx':      torch.cat(dxs,    axis=0),
-    'loss':    torch.cat(losses, axis=0),
-    'grad':    torch.cat(grads,  axis=0),
+    'x':       x,                           # [1, C, H, W]
+    'x_pred':  x_pred,                      # []
+    'dx':      torch.cat(dxs,    axis=0),   # [N_CLASS, C, H, W]
+    'nx_pred': torch.cat(preds,  axis=0),   # [N_CLASS, C, H, W]
+    'loss':    torch.cat(losses, axis=0),   # [N_CLASS, C, H, W]
+    'grad':    torch.cat(grads,  axis=0),   # [N_CLASS, C, H, W]
   }
   analyze_NX(NX)
 
@@ -116,7 +114,7 @@ if __name__ == '__main__':
   parser.add_argument('-M', '--model', default='resnet18', choices=MODELS, help='victim model with pretrained weight')
   parser.add_argument('--mode', default='min', choices=['min', 'max'], help='find nearest point with min/max grad')
 
-  parser.add_argument('-C', '--const', default=127, help='const single pixel or comma separated RGB values like 11,45,14 (values in 0 ~ 255)')
+  parser.add_argument('-C', '--const', default=0, type=int, help='const single pixel or comma separated RGB values like 11,45,14 (values in 0 ~ 255)')
   parser.add_argument('-R', '--rand', default=None, choices=RANDOMS, help='victim model with pretrained weight')
   parser.add_argument('--low',   default=0.0, type=float, help='rand param for uniform')
   parser.add_argument('--high',  default=1.0, type=float, help='rand param for uniform')

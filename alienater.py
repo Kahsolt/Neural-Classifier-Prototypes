@@ -107,7 +107,7 @@ class Alienater(Attack):
       # 提前结束战斗 ;)
       if loss_each.mean() == 0.0: break
     
-    return adv_images, delta, loss_each, grad_agg, pred
+    return delta, loss_each, grad_agg, pred
 
   def mifgsm(self, images: torch.Tensor, labels: torch.Tensor):
     ''' modified from torchattacks.attacks.MIFGSM '''
