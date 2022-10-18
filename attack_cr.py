@@ -120,7 +120,6 @@ if __name__ == '__main__':
   parser.add_argument('--high',  default=1.0, type=float, help='rand param for uniform')
   parser.add_argument('--mu',    default=0.5, type=float, help='rand param for normal')
   parser.add_argument('--sigma', default=0.1, type=float, help='rand param for normal')
-  
   parser.add_argument('-H', '--height', default=224, type=int, help='image height')
   parser.add_argument('-W', '--width',  default=224, type=int, help='image width')
 
