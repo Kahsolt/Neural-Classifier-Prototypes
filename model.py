@@ -100,7 +100,10 @@ MODELS = [
 
 def get_model(name):
   if hasattr(M, name):
-    model = getattr(M, name)(pretrained=True)
+    if name == 'swin_t':
+      model = M.swin_t(weights=M.Swin_T_Weights.DEFAULT)
+    else:
+      model = getattr(M, name)(pretrained=True)
   else:
     raise ValueError(f'[get_model] unknown model {name}')
   return model

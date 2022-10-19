@@ -115,7 +115,7 @@ if __name__ == '__main__':
   parser.add_argument('--method', default='pgd', choices=ATK_METHODS, help='base attack method')
   parser.add_argument('--eps', type=float, default=0.03, help='total pertubation limit')
   parser.add_argument('--alpha', type=float, default=0.001, help='stepwise pertubation limit ~= learning rate')
-  parser.add_argument('--steps', type=int, default=100, help='n_iters on one single picture towards a single target')
+  parser.add_argument('--steps', type=int, default=1000, help='n_iters on one single picture towards a single target')
 
   parser.add_argument('-B', '--batch_size', type=int, default=100, help='process n_attacks on one picture simultaneously, must be divisible by model n_classes')
   parser.add_argument('--overwrite', action='store_true', help='force overwrite')
