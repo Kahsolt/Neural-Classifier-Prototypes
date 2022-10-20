@@ -112,7 +112,6 @@ MODELS = [
   'swin_b',
 ]
 
-
 ''' Mem tracker '''
 proc = psutil.Process(os.getpid())
 def show_mem_stats(where:str):
