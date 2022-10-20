@@ -16,16 +16,103 @@ from util import *
 cpu = 'cpu'
 device = 'cpu'
 
-#MODELS = [
-#  'resnet18',
-#  'resnet50',
-#  'densenet121',
-#  'inception_v3',
-#  'efficientnet_v2_s',
-#  'swin_t',
-#]
-STOP_RATIO = 0.7
 
+MODELS = [
+  'alexnet', 
+
+#  'vgg11',
+#  'vgg13',
+#  'vgg16',
+  'vgg19',
+#  'vgg11_bn',
+#  'vgg13_bn',
+#  'vgg16_bn',
+  'vgg19_bn',
+
+#  'convnext_tiny',
+#  'convnext_small',
+  'convnext_base',
+  'convnext_large',
+  
+  'densenet121',
+#  'densenet161',
+#  'densenet169',
+  'densenet201',
+
+#  'efficientnet_b0',
+#  'efficientnet_b1',
+#  'efficientnet_b2',
+#  'efficientnet_b3',
+#  'efficientnet_b4',
+#  'efficientnet_b5',
+#  'efficientnet_b6',
+#  'efficientnet_b7',
+#  'efficientnet_v2_s',
+#  'efficientnet_v2_m',
+  'efficientnet_v2_l',
+
+  'googlenet',
+
+  'inception_v3',
+
+#  'mnasnet0_5',
+#  'mnasnet0_75',
+#  'mnasnet1_0',
+  'mnasnet1_3',
+
+#  'mobilenet_v2',
+#  'mobilenet_v3_small',
+  'mobilenet_v3_large',
+
+#  'regnet_y_400mf',
+#  'regnet_y_800mf',
+  'regnet_y_1_6gf',
+#  'regnet_y_3_2gf',
+#  'regnet_y_8gf',
+#  'regnet_y_16gf',
+#  'regnet_y_32gf',
+#  'regnet_y_128gf',
+
+#  'regnet_x_400mf',
+#  'regnet_x_800mf',
+  'regnet_x_1_6gf',
+#  'regnet_x_3_2gf',
+#  'regnet_x_8gf',
+#  'regnet_x_16gf',
+#  'regnet_x_32gf',
+
+  'resnet18',
+#  'resnet34',
+  'resnet50',
+  'resnet101',
+#  'resnet152',
+  'resnext50_32x4d',
+#  'resnext101_32x8d',
+#  'resnext101_64x4d',
+  'wide_resnet50_2',
+#  'wide_resnet101_2',
+
+#  'shufflenet_v2_x0_5',
+#  'shufflenet_v2_x1_0',
+#  'shufflenet_v2_x1_5',
+  'shufflenet_v2_x2_0',
+
+#  'squeezenet1_0',
+  'squeezenet1_1',
+
+  'vit_b_16',
+#  'vit_b_32',
+  'vit_l_16',
+#  'vit_l_32',
+#  'vit_h_14',
+
+#  'swin_t',
+#  'swin_s',
+  'swin_b',
+]
+
+MODELS = [name for name in MODELS if has_model(name)]
+STOP_RATE = 0.95
 
 log_dp = 'log'
 os.makedirs(log_dp, exist_ok=True)
@@ -55,6 +142,7 @@ def pgd_multi(models, images, labels, eps=0.03, alpha=0.001, steps=100, epoch=20
     logger.info(f'[pgd_multi] epoch [{e}/{epoch}]')
     deltas = [ ]
     for k, model in enumerate(models):
+      alienate_rates = []
       model.to(device)
       for i in range(steps):
         adv_images.requires_grad = True
@@ -65,7 +153,8 @@ def pgd_multi(models, images, labels, eps=0.03, alpha=0.001, steps=100, epoch=20
         mask_alienated = (pred == labels)      # [B=100]
         alienate_rate = mask_alienated.sum() / labels.numel()
 
-        if alienate_rate > STOP_RATIO:
+        stop_ratio = (50 / (epoch - 1) * e + 50) / 100
+        if alienate_rate > stop_ratio:
           logger.info(f'   [{i}/{steps}] attack on {MODELS[k]} aliente_rate: {alienate_rate:.3%}, early stop')
           break
 
@@ -85,6 +174,7 @@ def pgd_multi(models, images, labels, eps=0.03, alpha=0.001, steps=100, epoch=20
         if i % 10 == 0:
           logger.info(f'   [{i}/{steps}] attack on {MODELS[k]} aliente_rate: {alienate_rate:.3%}, loss_avg: {loss_each.mean():.6}')
 
+      alienate_rates.append(alienate_rate)
       deltas.append(delta)
       model.to(cpu)
 
@@ -94,6 +184,11 @@ def pgd_multi(models, images, labels, eps=0.03, alpha=0.001, steps=100, epoch=20
     mean_delta = torch.stack(deltas, axis=0).mean(axis=0)
     adv_images = torch.clamp(images + mean_delta, min=0, max=1).detach()
     logger.info(f'   Linf: {mean_delta.abs().max().item()}, L2: {(mean_delta.view(1, -1).norm(p=2, dim=-1) / mean_delta.numel()).item()}')
+
+    mean_alienate_rate = sum(alienate_rates) / len(alienate_rates)
+    if mean_alienate_rate > STOP_RATE:
+      logger.info(f'   >> mean_alienate_rate = {mean_alienate_rate}, early stop')
+      break
 
   return adv_images.to(cpu)
 
