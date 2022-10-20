@@ -108,7 +108,3 @@ def get_model(name):
   else:
     raise ValueError(f'[get_model] unknown model {name}')
   return model
-
-
-def has_model(name):
-  return hasattr(M, name)

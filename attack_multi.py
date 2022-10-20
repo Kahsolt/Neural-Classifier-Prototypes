@@ -2,19 +2,20 @@
 # Author: Armit
 # Create Time: 2022/10/18 
 
-import gc
 import os
+import gc
 import logging
+import psutil
+import warnings
 from argparse import ArgumentParser
+import warnings
+warnings.filterwarnings("ignore")
 
 import torch
+import torch.nn.functional as F
 
-from model import *
-from data import *
-from util import *
-
-cpu = 'cpu'
-device = 'cpu'
+from model import get_model
+from data import get_dataloader, normalize, DATASETS
 
 
 MODELS = [
@@ -111,8 +112,35 @@ MODELS = [
   'swin_b',
 ]
 
-MODELS = [name for name in MODELS if has_model(name)]
-STOP_RATE = 0.95
+
+''' Mem tracker '''
+proc = psutil.Process(os.getpid())
+def show_mem_stats(where:str):
+  stats = proc.memory_info()
+  print(f'[Mem] {where}')
+  print(f'   rss={stats.rss//2**20} MB, vms={stats.vms//2**20} MB, pagefile={stats.pagefile//2**20} MB, ' + 
+        f'peak_wset={stats.peak_wset//2**20} MB, n_page_faults={stats.num_page_faults // 1000} k')
+
+def gc_all():
+  torch.cuda.ipc_collect()
+  torch.cuda.empty_cache()
+  gc.collect()
+
+
+''' Gloabls '''
+AVAILABLE_MODELS = [ ]
+show_mem_stats('before test AVAILABLE_MODELS')
+for name in MODELS:
+  try:
+    m = get_model(name) ; del m
+    AVAILABLE_MODELS.append(name)
+  except: pass
+gc.collect()
+show_mem_stats('after test AVAILABLE_MODELS')
+
+device = 'cuda'
+N_CLASSES = 1000
+STOP_RATE = (len(AVAILABLE_MODELS) - 1) / len(AVAILABLE_MODELS)
 
 log_dp = 'log'
 os.makedirs(log_dp, exist_ok=True)
@@ -129,7 +157,12 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 
-def pgd_multi(models, images, labels, eps=0.03, alpha=0.001, steps=100, epoch=20, **kwargs):
+def pgd_multi(images, labels, args, **kwargs):
+  eps   = args.eps
+  alpha = args.alpha
+  steps = args.steps
+  epoch = args.epoch
+
   images = images.clone().detach().to(device)
   labels = labels.clone().detach().to(device)
 
@@ -141,9 +174,12 @@ def pgd_multi(models, images, labels, eps=0.03, alpha=0.001, steps=100, epoch=20
   for e in range(epoch):
     logger.info(f'[pgd_multi] epoch [{e}/{epoch}]')
     deltas = [ ]
-    for k, model in enumerate(models):
+    for k, model_name in enumerate(AVAILABLE_MODELS):
+      show_mem_stats(f'before get_model {model_name}')
+      model = get_model(model_name).to(device)
+      show_mem_stats(f'after get_model {model_name}')
+
       alienate_rates = []
-      model.to(device)
       for i in range(steps):
         adv_images.requires_grad = True
         adv_images_norm = normalizer(adv_images)
@@ -169,17 +205,17 @@ def pgd_multi(models, images, labels, eps=0.03, alpha=0.001, steps=100, epoch=20
         delta = torch.clamp(adv_images - images, min=-eps, max=eps)
         adv_images = torch.clamp(images + delta, min=0, max=1).detach()
 
-        del grad_each, logits
+        del grad_each, logits, pred, mask_alienated, mask_expand ; gc_all()
 
         if i % 10 == 0:
           logger.info(f'   [{i}/{steps}] attack on {MODELS[k]} aliente_rate: {alienate_rate:.3%}, loss_avg: {loss_each.mean():.6}')
 
       alienate_rates.append(alienate_rate)
       deltas.append(delta)
-      model.to(cpu)
 
-      gc.collect()
-      if device == 'cuda': torch.cuda.ipc_collect()
+      show_mem_stats(f'before gc model {model_name}')
+      del model ; gc_all()
+      show_mem_stats(f'after gc model {model_name}')
 
     mean_delta = torch.stack(deltas, axis=0).mean(axis=0)
     adv_images = torch.clamp(images + mean_delta, min=0, max=1).detach()
@@ -190,58 +226,60 @@ def pgd_multi(models, images, labels, eps=0.03, alpha=0.001, steps=100, epoch=20
       logger.info(f'   >> mean_alienate_rate = {mean_alienate_rate}, early stop')
       break
 
-  return adv_images.to(cpu)
+    del deltas, mean_delta, alienate_rates
+
+  with torch.no_grad():
+    pred_AX = []
+    for model_name in AVAILABLE_MODELS:
+      show_mem_stats(f'before get_model {model_name}')
+      model = get_model(model_name).to(device)
+
+      logits = model(normalizer(adv_images))
+      pred_AX.append(logits.argmax(dim=-1))     # [B]
+
+      del model ; gc_all()
+      show_mem_stats(f'after gc model {model_name}')
+    pred_AX = torch.stack(pred_AX, dim=0)     # [K=model_cnt, B]
+
+  del images, labels, adv_images ; gc_all()
+
+  return pred_AX
 
 
 def attack_multi(args):
   ''' Dirs '''
   os.makedirs(args.data_path, exist_ok=True)
-
-  ''' Model '''
-  models = [ ]
-  for m in MODELS:
-    model = get_model(m)
-    model.eval()
-    models.append(model) 
   
   ''' Data '''
   dataloader = get_dataloader(args.atk_dataset, args.data_path, split='test', shuffle=True)
+  show_mem_stats('after dataloader')
 
-  X, Y = iter(dataloader).next()              # [B=1, C, H, W]
-  with torch.no_grad():
-    y_hat = model(X)                          # [B=1, N_CLASS]
-    N_CLASSES = y_hat.shape[-1]               # N_CLASS
-    assert N_CLASSES % args.batch_size == 0
-  
   ''' Test '''
-  n_samples = len(dataloader.dataset)
-  for i, (X, Y) in enumerate(dataloader):
-    with torch.no_grad():
-      logits = model(normalize(X, dataset=args.atk_dataset))
-      pred = logits.argmax(dim=-1).squeeze().item()
-
-      logger.info(f'[{i}/{n_samples}] original label truth: {Y.squeeze().item()}, pred {pred}')
-
+  N = len(dataloader.dataset)
+  for X, Y in dataloader:
+    show_mem_stats('before X_repeat')
+    X = X.to(device)
     X_repeat = X.repeat([args.batch_size, 1, 1, 1])      # [B, C=3, H, W]
+    show_mem_stats('before batch')
     for b in range(N_CLASSES // args.batch_size):
       cls_s = b * args.batch_size
       cls_e = (b + 1) * args.batch_size
-      Y_tgt = torch.LongTensor([i for i in range(cls_s, cls_e)])
+      Y_tgt = torch.LongTensor([i for i in range(cls_s, cls_e)]).to(device)
 
       normalizer = lambda x: normalize(x, dataset=args.atk_dataset)
-      AX = pgd_multi(models, X_repeat, Y_tgt, normalizer=normalizer)
+      show_mem_stats('before pgd_multi')
+      pred_AX = pgd_multi(X_repeat, Y_tgt, args, normalizer=normalizer)
+      show_mem_stats('after pgd_multi')
 
-      with torch.no_grad():
-        pred_AX = []
-        for model in models:
-          logits = model(normalize(AX, dataset=args.atk_dataset))
-          pred_AX.append(logits.argmax(dim=-1))     # [B]
-        pred_AX = torch.stack(pred_AX, dim=0)     # [K=model_cnt, B]
-      
-      K = pred_AX.shape[0]
-      for i in range(len(AX)):
+      K = len(AVAILABLE_MODELS)
+      for i in range(len(pred_AX)):
         T_asr = (pred_AX[:, i] == Y_tgt[i].item()).sum()
-        logger.info(f'[{i}/{n_samples}] induce {pred} => {Y_tgt[i].item()}, T_asr: {T_asr}/{K}={T_asr / K:.2%}')
+        logger.info(f'[{i}/{N}] induce {Y.squeeze().item()} => {Y_tgt[i].item()}, T_asr: {T_asr}/{K}={T_asr / K:.2%}')
+
+      del Y_tgt, pred_AX ; gc_all()
+
+    del X, Y, X_repeat ; gc_all()
+    show_mem_stats('end of attack batch')
 
     logger.info('=' * 42)
 
@@ -249,10 +287,14 @@ def attack_multi(args):
 if __name__ == '__main__':
   parser = ArgumentParser()
   parser.add_argument('-M', '--model', default='resnet18', choices=MODELS, help='victim model with pretrained weight')
-  parser.add_argument('--mode', default='min', choices=['min', 'max'], help='find nearest point with min/max grad')
   parser.add_argument('--atk_dataset', default='imagenet-1k', choices=DATASETS, help='victim dataset')
 
-  parser.add_argument('-B', '--batch_size', type=int, default=100, help='process n_attacks on one image simultaneously, must be divisible by model n_classes')
+  parser.add_argument('--eps',   default=0.03,  type=float)
+  parser.add_argument('--alpha', default=0.001, type=float)
+  parser.add_argument('--steps', default=100,   type=int)
+  parser.add_argument('--epoch', default=20,    type=int)
+
+  parser.add_argument('-B', '--batch_size', type=int, default=50, help='process n_attacks on one image simultaneously, must be divisible by model n_classes')
   parser.add_argument('--overwrite', action='store_true', help='force overwrite')
   parser.add_argument('--data_path', default='data', help='folder path to downloaded dataset')
   parser.add_argument('--log_path', default='log', help='folder path to local trained model weights and logs')
