@@ -75,7 +75,7 @@ def attack(args):
 
   logger.info(f'>> pred: {x_pred}, prob: {prob[x_pred]:%}')
 
-  X_repeat = X.repeat([args.batch_size, 1, 1, 1])      # [B, C=3, H, W]
+  X_expand = X.expand(args.batch_size, -1, -1, -1)      # [B, C=3, H, W]
   dxs, losses, grads, preds = [], [], [], []
   for b in range(N_CLASSES // args.batch_size):
     cls_s = b * args.batch_size
@@ -84,7 +84,7 @@ def attack(args):
     Y_tgt = torch.LongTensor([i for i in range(cls_s, cls_e)])
     Y_tgt = Y_tgt.to(device)
 
-    dx, loss, grad, pred = atk(X_repeat, Y_tgt)
+    dx, loss, grad, pred = atk(X_expand, Y_tgt)
 
     dxs   .append(dx  .detach().cpu())
     losses.append(loss.detach().cpu())

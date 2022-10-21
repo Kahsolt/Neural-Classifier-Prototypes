@@ -67,7 +67,7 @@ def test_asr(model, dataloader, target, ncp=None, resizer='tile') -> float:
   if ncp is not None:
     X, _ = iter(dataloader).next()
     DX = ncp_expand_batch(ncp, X.shape, resizer=resizer)
-    target = target.repeat(X.shape[0])
+    target = target.expand(X.shape[0])
 
   total, attacked = 0, 0
   with torch.no_grad():

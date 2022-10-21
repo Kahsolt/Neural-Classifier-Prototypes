@@ -33,7 +33,7 @@ MODELS = [
 #  'convnext_tiny',
 #  'convnext_small',
   'convnext_base',
-  'convnext_large',
+#  'convnext_large',
   
   'densenet121',
 #  'densenet161',
@@ -49,12 +49,12 @@ MODELS = [
 #  'efficientnet_b6',
 #  'efficientnet_b7',
 #  'efficientnet_v2_s',
-#  'efficientnet_v2_m',
-  'efficientnet_v2_l',
+#  'efficientnet_v2_m',   # request image resize
+#  'efficientnet_v2_l',
 
-  'googlenet',
+#  'googlenet',           # request image resize
 
-  'inception_v3',
+#  'inception_v3',        # request image resize
 
 #  'mnasnet0_5',
 #  'mnasnet0_75',
@@ -113,40 +113,52 @@ MODELS = [
 ]
 
 ''' Mem tracker '''
+device = 'cuda'      # NOTE: use cuda will cause memory leak until broken, don't know why :(
 proc = psutil.Process(os.getpid())
-def show_mem_stats(where:str):
-  stats = proc.memory_info()
+def show_mem_stats(where:str=''):
+  stats = proc.memory_full_info()
+
   print(f'[Mem] {where}')
-  print(f'   rss={stats.rss//2**20} MB, vms={stats.vms//2**20} MB, pagefile={stats.pagefile//2**20} MB, ' + 
-        f'peak_wset={stats.peak_wset//2**20} MB, n_page_faults={stats.num_page_faults // 1000} k')
+  print(f'   ' + 
+        (f'uss={stats.uss//2**20}MB, '                     if hasattr(stats, 'uss') else '') + 
+        (f'rss={stats.rss//2**20}MB, '                     if hasattr(stats, 'rss') else '') + 
+        (f'vms={stats.vms//2**20}MB, '                     if hasattr(stats, 'vms') else '') + 
+        (f'peak_wset={stats.peak_wset//2**20}MB, '         if hasattr(stats, 'peak_wset') else '') + 
+        (f'n_page_faults={stats.num_page_faults // 1000}k' if hasattr(stats, 'num_page_faults') else ''))
+  if device == 'cuda':
+    print(f'   ' + 
+          f'vram_alloc={torch.cuda.memory_allocated(device=device)//2**20}MB, ' + 
+          f'vram_cache={torch.cuda.memory_reserved(device=device)//2**20}MB')
+
 
 def gc_all():
-  torch.cuda.ipc_collect()
-  torch.cuda.empty_cache()
-  gc.collect()
+  if device == 'cuda':
+    for _ in range(5):
+      torch.cuda.empty_cache()
+      torch.cuda.ipc_collect()
+  print('gc.collect:', gc.collect())
 
 
 ''' Gloabls '''
 AVAILABLE_MODELS = [ ]
-show_mem_stats('before test AVAILABLE_MODELS')
 for name in MODELS:
   try:
     m = get_model(name) ; del m
     AVAILABLE_MODELS.append(name)
-  except: pass
-gc.collect()
-show_mem_stats('after test AVAILABLE_MODELS')
+  except Exception as e:
+    print(f'ignore model {name} due to {e}')
+gc_all()
 
-device = 'cuda'
 N_CLASSES = 1000
 STOP_RATE = (len(AVAILABLE_MODELS) - 1) / len(AVAILABLE_MODELS)
+print('final STOP_RATE:', STOP_RATE)
 
 log_dp = 'log'
 os.makedirs(log_dp, exist_ok=True)
 
 
 ''' Logger '''
-logger = logging.getLogger('ncp')
+logger = logging.getLogger('ncp_multi')
 logging.basicConfig(level=logging.INFO)
 logger.setLevel(logging.INFO)
 handler = logging.FileHandler(os.path.join(log_dp, "attack_multi.log"))
@@ -162,21 +174,20 @@ def pgd_multi(images, labels, args, **kwargs):
   steps = args.steps
   epoch = args.epoch
 
-  images = images.clone().detach().to(device)
-  labels = labels.clone().detach().to(device)
+  with torch.no_grad():
+    images = images.to(device)
+    labels = labels.to(device)
 
-  adv_images = images.clone().detach()
-  adv_images = adv_images + torch.empty_like(adv_images).uniform_(-eps, eps)
-  adv_images = torch.clamp(adv_images, min=0, max=1).detach()
+    adv_images = images.clone().detach()
+    adv_images = adv_images + torch.empty_like(adv_images).uniform_(-eps, eps)
+    adv_images = torch.clamp(adv_images, min=0, max=1)
 
   normalizer = kwargs.get('normalizer', lambda _: _)
   for e in range(epoch):
     logger.info(f'[pgd_multi] epoch [{e}/{epoch}]')
     deltas = [ ]
     for k, model_name in enumerate(AVAILABLE_MODELS):
-      show_mem_stats(f'before get_model {model_name}')
       model = get_model(model_name).to(device)
-      show_mem_stats(f'after get_model {model_name}')
 
       alienate_rates = []
       for i in range(steps):
@@ -195,49 +206,52 @@ def pgd_multi(images, labels, args, **kwargs):
 
         # Calculate targeted loss
         loss_each = F.cross_entropy(logits, labels, reduce=False)
-        # Update adversarial images
+        with torch.no_grad():
+          loss_mean = loss_each.mean().item()
         grad_each = torch.autograd.grad(loss_each, adv_images, grad_outputs=loss_each)[0]
+        # Force clear grads and loss, otherwise the VRAM will booom!!
+        model.zero_grad() ; del loss_each
+        
+        # Update adversarial images
+        with torch.no_grad():
+          mask_expand = (~mask_alienated).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+          adv_images = adv_images - alpha * grad_each.tanh() * mask_expand
 
-        mask_expand = (~mask_alienated).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-        adv_images = adv_images.detach() - alpha * grad_each.tanh() * mask_expand
-
-        delta = torch.clamp(adv_images - images, min=-eps, max=eps)
-        adv_images = torch.clamp(images + delta, min=0, max=1).detach()
-
-        del grad_each, logits, pred, mask_alienated, mask_expand ; gc_all()
+          delta = torch.clamp(adv_images - images, min=-eps, max=eps)
+          adv_images = torch.clamp(images + delta, min=0, max=1)
 
         if i % 10 == 0:
-          logger.info(f'   [{i}/{steps}] attack on {MODELS[k]} aliente_rate: {alienate_rate:.3%}, loss_avg: {loss_each.mean():.6}')
-
+          logger.info(f'   [{i}/{steps}] attack on {MODELS[k]} aliente_rate: {alienate_rate:.3%}, loss_avg: {loss_mean:.6}')
+          
       alienate_rates.append(alienate_rate)
-      deltas.append(delta)
+      deltas.append(delta.to('cpu'))
 
-      show_mem_stats(f'before gc model {model_name}')
       del model ; gc_all()
-      show_mem_stats(f'after gc model {model_name}')
+      show_mem_stats()
 
-    mean_delta = torch.stack(deltas, axis=0).mean(axis=0)
-    adv_images = torch.clamp(images + mean_delta, min=0, max=1).detach()
-    logger.info(f'   Linf: {mean_delta.abs().max().item()}, L2: {(mean_delta.view(1, -1).norm(p=2, dim=-1) / mean_delta.numel()).item()}')
+    with torch.no_grad():
+      images = images.to('cpu')
+      mean_delta = torch.stack(deltas, axis=0).mean(axis=0)
+      adv_images = torch.clamp(images + mean_delta, min=0, max=1)
+      logger.info(f'   Linf: {mean_delta.abs().max().item()}, L2: {(mean_delta.view(1, -1).norm(p=2, dim=-1) / mean_delta.numel()).item()}')
 
-    mean_alienate_rate = sum(alienate_rates) / len(alienate_rates)
-    if mean_alienate_rate > STOP_RATE:
-      logger.info(f'   >> mean_alienate_rate = {mean_alienate_rate}, early stop')
-      break
+      mean_alienate_rate = sum(alienate_rates) / len(alienate_rates)
+      if mean_alienate_rate > STOP_RATE:
+        logger.info(f'   >> mean_alienate_rate = {mean_alienate_rate}, early stop')
+        break
 
-    del deltas, mean_delta, alienate_rates
+      del deltas, mean_delta, alienate_rates
 
   with torch.no_grad():
+    adv_images.to(device)
     pred_AX = []
     for model_name in AVAILABLE_MODELS:
-      show_mem_stats(f'before get_model {model_name}')
       model = get_model(model_name).to(device)
 
       logits = model(normalizer(adv_images))
       pred_AX.append(logits.argmax(dim=-1))     # [B]
 
       del model ; gc_all()
-      show_mem_stats(f'after gc model {model_name}')
     pred_AX = torch.stack(pred_AX, dim=0)     # [K=model_cnt, B]
 
   del images, labels, adv_images ; gc_all()
@@ -256,19 +270,15 @@ def attack_multi(args):
   ''' Test '''
   N = len(dataloader.dataset)
   for X, Y in dataloader:
-    show_mem_stats('before X_repeat')
     X = X.to(device)
-    X_repeat = X.repeat([args.batch_size, 1, 1, 1])      # [B, C=3, H, W]
-    show_mem_stats('before batch')
+    X_expand = X.expand(args.batch_size, -1, -1, -1)      # [B, C=3, H, W]
     for b in range(N_CLASSES // args.batch_size):
       cls_s = b * args.batch_size
       cls_e = (b + 1) * args.batch_size
       Y_tgt = torch.LongTensor([i for i in range(cls_s, cls_e)]).to(device)
 
       normalizer = lambda x: normalize(x, dataset=args.atk_dataset)
-      show_mem_stats('before pgd_multi')
-      pred_AX = pgd_multi(X_repeat, Y_tgt, args, normalizer=normalizer)
-      show_mem_stats('after pgd_multi')
+      pred_AX = pgd_multi(X_expand, Y_tgt, args, normalizer=normalizer)
 
       K = len(AVAILABLE_MODELS)
       for i in range(len(pred_AX)):
@@ -277,8 +287,7 @@ def attack_multi(args):
 
       del Y_tgt, pred_AX ; gc_all()
 
-    del X, Y, X_repeat ; gc_all()
-    show_mem_stats('end of attack batch')
+    del X, Y, X_expand ; gc_all()
 
     logger.info('=' * 42)
 
@@ -293,7 +302,7 @@ if __name__ == '__main__':
   parser.add_argument('--steps', default=100,   type=int)
   parser.add_argument('--epoch', default=20,    type=int)
 
-  parser.add_argument('-B', '--batch_size', type=int, default=50, help='process n_attacks on one image simultaneously, must be divisible by model n_classes')
+  parser.add_argument('-B', '--batch_size', type=int, default=20, help='process n_attacks on one image simultaneously, must be divisible by model n_classes')
   parser.add_argument('--overwrite', action='store_true', help='force overwrite')
   parser.add_argument('--data_path', default='data', help='folder path to downloaded dataset')
   parser.add_argument('--log_path', default='log', help='folder path to local trained model weights and logs')

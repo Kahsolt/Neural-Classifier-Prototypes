@@ -150,7 +150,7 @@ def show_grad(args):
                        x.squeeze().cpu().numpy().transpose([1, 2, 0]),
                        y.squeeze().item())
 
-  X_repeat = X.repeat([args.batch_size, 1, 1, 1])      # [B, C=3, H, W]
+  X_expand = X.expand(args.batch_size, -1, -1, -1)      # [B, C=3, H, W]
   for b in range(N_CLASSES // args.batch_size):
     cls_s = b * args.batch_size
     cls_e = (b + 1) * args.batch_size
@@ -158,7 +158,7 @@ def show_grad(args):
     Y_tgt = torch.LongTensor([i for i in range(cls_s, cls_e)]).to(device)
 
     if 'original':
-      loss_each, grad_each, grad2_each = calc_grad(model, X_repeat, Y_tgt)
+      loss_each, grad_each, grad2_each = calc_grad(model, X_expand, Y_tgt)
       loss_each  = loss_each .detach().cpu().numpy()                          # [B]
       grad_each  = grad_each .detach().cpu().numpy().transpose([0, 2, 3, 1])  # [B, H, W, C]
       grad2_each = grad2_each.detach().cpu().numpy().transpose([0, 2, 3, 1])
@@ -166,7 +166,7 @@ def show_grad(args):
       savefig_grads(loss_each, grad_each, grad2_each, cls_s)
 
     if 'adversarial':
-      AX = atk(X_repeat, Y_tgt)
+      AX = atk(X_expand, Y_tgt)
 
       logits = model(AX)
       savefig_ax_probdist(logits.detach(), cls_s, y.squeeze().item())

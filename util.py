@@ -52,7 +52,7 @@ def ncp_expand_batch(ncp:torch.Tensor, shape:torch.Size, resizer='tile') -> torc
   else:
     raise ValueError('choose from ["tile", "interpolate"]')
   
-  ncp = ncp.unsqueeze(dim=0).repeat([B, 1, 1, 1])   # expand batch
+  ncp = ncp.unsqueeze(dim=0).expand(B, -1, -1, -1)   # expand batch
 
   return ncp
 

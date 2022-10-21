@@ -7,6 +7,7 @@ import json
 from PIL import Image
 from traceback import print_exc
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 import torchvision.datasets as D
@@ -25,9 +26,8 @@ DATASETS = [
 
 class TinyImageNet(Dataset):
 
-  def __init__(self, root: str, split='train', transform=T.ToTensor()):
+  def __init__(self, root: str, split='train'):
     self.base_path = os.path.join(root, split)
-    self.transform = transform
 
     with open(os.path.join(root, 'synsets.txt'), encoding='utf-8') as fh:
       class_names = fh.read().strip().split('\n')
@@ -50,17 +50,15 @@ class TinyImageNet(Dataset):
     fp, tgt = self.metadata[idx]
     img = Image.open(fp)
     img = img.convert('RGB')
-    if self.transform is not None:
-      img = self.transform(img)
-
-    return img, tgt
+    im = np.asarray(img, dtype=np.float32).transpose(2, 1, 0)
+    im = im / 255.0
+    return im, tgt
 
 
 class ImageNet_1k(Dataset):
 
-  def __init__(self, root: str, transform=T.ToTensor()):
+  def __init__(self, root: str):
     self.base_path = os.path.join(root, 'val')
-    self.transform = transform
 
     fns = [fn for fn in os.listdir(self.base_path)]
     fps = [os.path.join(self.base_path, fn) for fn in fns]
@@ -77,10 +75,9 @@ class ImageNet_1k(Dataset):
     fp, tgt = self.metadata[idx]
     img = Image.open(fp)
     img = img.convert('RGB')
-    if self.transform is not None:
-      img = self.transform(img)
-
-    return img, tgt
+    im = np.asarray(img, dtype=np.float32).transpose(2, 1, 0)
+    im = im / 255.0
+    return im, tgt
 
 
 def chk_dataset_compatible(dataset1:str, dataset2:str):
@@ -101,24 +98,18 @@ def normalize(X: torch.Tensor, dataset:str='') -> torch.Tensor:
 
 
 def get_dataloader(name, data_path, split='train', shuffle=False):
-  transform_gray2rgb = T.Compose([
-    T.ToTensor(),
-    T.Lambda(lambda x: x.expand(3, 1, 1)),
-  ])
-  transform = T.Compose([
-    T.ToTensor(),
-  ])
+  transform = T.ToTensor()
   datasets = {
     # 28 * 28
-    'mnist'        : lambda: D.MNIST   (root=data_path, split=split=='train', transform=transform_gray2rgb, download=True),
+    'mnist'        : lambda: D.MNIST   (root=data_path, split=split=='train', transform=transform, download=True),
     # 32 * 32
     'svhn'         : lambda: D.SVHN    (root=data_path, split=split         , transform=transform, download=True),
     'cifar10'      : lambda: D.CIFAR10 (root=data_path, train=split=='train', transform=transform, download=True),
     'cifar100'     : lambda: D.CIFAR100(root=data_path, train=split=='train', transform=transform, download=True),
     # 64 * 64
-    'tiny-imagenet': lambda: TinyImageNet(root=os.path.join(data_path, 'tiny-imagenet-200'), split='train' if split=='train' else 'val', transform=transform),
+    'tiny-imagenet': lambda: TinyImageNet(root=os.path.join(data_path, 'tiny-imagenet-200'), split='train' if split=='train' else 'val'),
     # 224 * 224
-    'imagenet-1k'  : lambda: ImageNet_1k(root=os.path.join(data_path, 'imagenet-1k'), transform=transform),
+    'imagenet-1k'  : lambda: ImageNet_1k(root=os.path.join(data_path, 'imagenet-1k')),
   }
   try:
     dataset = datasets[name]()

@@ -58,13 +58,13 @@ def attack_transfer(args):
 
       print(f'[{i}/{n_samples}] original label truth: {Y.squeeze().item()}, pred {pred}')
 
-    X_repeat = X.repeat([args.batch_size, 1, 1, 1])      # [B, C=3, H, W]
+    X_expand = X.expand(args.batch_size, -1, -1, -1)      # [B, C=3, H, W]
     for b in range(N_CLASSES // args.batch_size):
       cls_s = b * args.batch_size
       cls_e = (b + 1) * args.batch_size
       Y_tgt = torch.LongTensor([i for i in range(cls_s, cls_e)]).to(device)
 
-      AX = atk(X_repeat, Y_tgt)
+      AX = atk(X_expand, Y_tgt)
 
       with torch.no_grad():
         logits = model(normalize(AX, dataset=args.atk_dataset))
@@ -72,7 +72,7 @@ def attack_transfer(args):
 
         T_pred_X = []
         for t_model in transfer_models:
-          logits = t_model(normalize(X_repeat, dataset=args.atk_dataset))
+          logits = t_model(normalize(X_expand, dataset=args.atk_dataset))
           T_pred_X.append(logits.argmax(dim=-1))  # [B]
         T_pred_X = torch.stack(T_pred_X, dim=0)     # [K=model_cnt, B]
 
